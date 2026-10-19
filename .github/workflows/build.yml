@@ -1,4 +1,4 @@
-name: Compilar Positron con FinaSU
+name: Compilar Positron con KernelSU Next
 on:
   workflow_dispatch:
 
@@ -21,11 +21,10 @@ jobs:
     - name: Descargar código fuente
       uses: actions/checkout@v4
 
-    - name: Integrar solo FinaSU
+    - name: Integrar KernelSU Next
       run: |
         rm -rf KernelSU drivers/kernelsu
-        git clone https://github.com/LyraVoid/FinaSU.git KernelSU
-        cd KernelSU && git fetch --tags || true && cd ..
+        git clone -b next https://github.com/rifsxd/KernelSU-Next.git KernelSU
         ln -sf ../KernelSU/kernel drivers/kernelsu
         grep -q "kernelsu" drivers/Makefile || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
         grep -q "kernelsu" drivers/Kconfig || sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
@@ -70,5 +69,5 @@ jobs:
     - name: Subir archivo Image
       uses: actions/upload-artifact@v4
       with:
-        name: Image-FinaSU
+        name: Image-KSU-Next
         path: out/arch/arm64/boot/Image
