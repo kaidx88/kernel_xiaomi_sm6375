@@ -9,30 +9,44 @@ jobs:
     - name: Descargar código fuente
       uses: actions/checkout@v4
 
+    - name: Integrar solo FinaSU
+      run: |
+        rm -rf KernelSU drivers/kernelsu
+        git clone --depth=1 https://github.com/LyraVoid/FinaSU.git KernelSU
+        ln -sf ../KernelSU/kernel drivers/kernelsu
+        grep -q "kernelsu" drivers/Makefile || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
+        grep -q "kernelsu" drivers/Kconfig || sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+        ls -la drivers/kernelsu/
+
     - name: Preparar entorno de compilación
       run: |
         sudo apt-get update
-        sudo apt-get install -y bc bison build-essential ccache curl flex gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi git gnupg gperf lib32ncurses5-dev lib32z1-dev liblz4-tool libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 xz-utils
+        sudo apt-get install -y bc bison build-essential ccache cpio curl flex gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi git gnupg gperf kmod lib32ncurses5-dev lib32z1-dev liblz4-tool libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop python3 python-is-python3 rsync schedtool squashfs-tools xsltproc xz-utils zip zlib1g-dev
         mkdir -p clang
         curl -LSs "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/LLVM-21.1.8-Linux-X64.tar.xz" | tar -xJ --strip-components=1 -C clang
-
-    - name: Integrar FinaSU
-      run: |
-        rm -rf KernelSU drivers/kernelsu
-        curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -
-        
 
     - name: Compilar Kernel
       run: |
         export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
         export ARCH=arm64
         export SUBARCH=arm64
-        make O=out vendor/veux-perf_defconfig
-        make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1
+        if [ -f arch/arm64/configs/vendor/veux-perf_defconfig ]; then
+          DEFCONFIG="vendor/veux-perf_defconfig"
+        elif [ -f arch/arm64/configs/vendor/veux_defconfig ]; then
+          DEFCONFIG="vendor/veux_defconfig"
+        elif [ -f arch/arm64/configs/veux_defconfig ]; then
+          DEFCONFIG="veux_defconfig"
+        else
+          DEFCONFIG=$(cd arch/arm64/configs && find . -type f \( -name "*veux*" -o -name "*sm6375*" -o -name "*holi*" -o -name "*blair*" \) 2>/dev/null | head -n 1 | sed 's|^\./||')
+        fi
+        echo "Usando defconfig: $DEFCONFIG"
+        make O=out $DEFCONFIG CC=clang LLVM=1 LLVM_IAS=1
+        ./scripts/config --file out/.config -e KSU -e KPROBES -e HAVE_KPROBES -e KPROBE_EVENTS
+        make O=out olddefconfig CC=clang LLVM=1 LLVM_IAS=1
+        make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 Image
 
     - name: Subir archivo Image
       uses: actions/upload-artifact@v4
       with:
         name: Image-FinaSU
         path: out/arch/arm64/boot/Image
-        
