@@ -12,9 +12,10 @@ jobs:
     - name: Preparar entorno de compilación
       run: |
         sudo apt-get update
-        sudo apt-get install -y bc bison build-essential ccache curl flex gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi git gnupg gperf lib32ncurses5-dev lib32z1-dev liblz4-tool libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3
-        git clone --depth=1 https://github.com/ZyCromerZ/Clang.git -b 21 clang
-        
+        sudo apt-get install -y bc bison build-essential ccache curl flex gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi git gnupg gperf lib32ncurses5-dev lib32z1-dev liblz4-tool libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 xz-utils
+        mkdir -p clang
+        curl -LSs "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/LLVM-21.1.8-Linux-X64.tar.xz" | tar -xJ --strip-components=1 -C clang
+
     - name: Integrar FinaSU
       run: |
         rm -rf KernelSU drivers/kernelsu
@@ -22,7 +23,7 @@ jobs:
 
     - name: Compilar Kernel
       run: |
-        export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
+        export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
         export ARCH=arm64
         export SUBARCH=arm64
         make O=out vendor/veux-perf_defconfig
