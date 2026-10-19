@@ -6,13 +6,24 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
+    - name: Liberar espacio y activar Swap
+      run: |
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+        sudo fallocate -l 8G /swapfile
+        sudo chmod 600 /swapfile
+        sudo mkswap /swapfile
+        sudo swapon /swapfile
+        free -h
+        df -h
+
     - name: Descargar código fuente
       uses: actions/checkout@v4
 
     - name: Integrar solo FinaSU
       run: |
         rm -rf KernelSU drivers/kernelsu
-        git clone --depth=1 https://github.com/LyraVoid/FinaSU.git KernelSU
+        git clone https://github.com/LyraVoid/FinaSU.git KernelSU
+        cd KernelSU && git fetch --tags || true && cd ..
         ln -sf ../KernelSU/kernel drivers/kernelsu
         grep -q "kernelsu" drivers/Makefile || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
         grep -q "kernelsu" drivers/Kconfig || sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
@@ -41,8 +52,17 @@ jobs:
         fi
         echo "Usando defconfig: $DEFCONFIG"
         make O=out $DEFCONFIG CC=clang LLVM=1 LLVM_IAS=1
-        ./scripts/config --file out/.config -e KSU -e KPROBES -e HAVE_KPROBES -e KPROBE_EVENTS
+        ./scripts/config --file out/.config \
+          -e KSU \
+          -e KPROBES \
+          -e HAVE_KPROBES \
+          -e KPROBE_EVENTS \
+          -e KRETPROBES \
+          -e OVERLAY_FS \
+          -d DEBUG_INFO \
+          --set-val FRAME_WARN 0
         make O=out olddefconfig CC=clang LLVM=1 LLVM_IAS=1
+        grep "CONFIG_KSU" out/.config || true
         make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 Image
 
     - name: Subir archivo Image
