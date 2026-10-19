@@ -1,0 +1,37 @@
+name: Compilar Positron con FinaSU
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Descargar código fuente
+      uses: actions/checkout@v4
+
+    - name: Preparar entorno de compilación
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y bc bison build-essential ccache curl flex gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi git gnupg gperf lib32ncurses5-dev lib32z1-dev liblz4-tool libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3
+        mkdir -p clang
+        wget -qO- https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r487747c.tar.gz | tar -xz -C clang
+
+    - name: Integrar FinaSU
+      run: |
+        rm -rf KernelSU drivers/kernelsu
+        curl -LSs "https://raw.githubusercontent.com/LyraVoid/FinaSU/main/kernel/setup.sh" | bash -
+
+    - name: Compilar Kernel
+      run: |
+        export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
+        export ARCH=arm64
+        export SUBARCH=arm64
+        make O=out vendor/veux-perf_defconfig
+        make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1
+
+    - name: Subir archivo Image
+      uses: actions/upload-artifact@v4
+      with:
+        name: Image-FinaSU
+        path: out/arch/arm64/boot/Image
+        
