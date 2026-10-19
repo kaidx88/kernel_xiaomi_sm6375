@@ -13,9 +13,8 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y bc bison build-essential ccache curl flex gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi git gnupg gperf lib32ncurses5-dev lib32z1-dev liblz4-tool libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3
-        mkdir -p clang
-        wget -qO- https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r487747c.tar.gz | tar -xz -C clang
-
+        git clone --depth=1 https://github.com/ZyCromerZ/Clang.git -b 21 clang
+        
     - name: Integrar FinaSU
       run: |
         rm -rf KernelSU drivers/kernelsu
