@@ -1,4 +1,4 @@
-name: Compilar Positron Blindado KSU-Next
+name: Compilar Positron KSU-Next (Fix Flags)
 on:
   workflow_dispatch:
 
@@ -62,13 +62,9 @@ jobs:
         echo "CONFIG_KSU=y" >> arch/arm64/configs/$DEFCONFIG
         echo "CONFIG_KSU_KPROBE_HOOKS=y" >> arch/arm64/configs/$DEFCONFIG
 
-        # 2. DESTRUIR TODAS LAS REGLAS STRICT WERROR EN EL CODIGO FUENTE
-        find . -type f \( -name "Makefile" -o -name "Kbuild" \) -exec sed -i 's/-Werror//g' {} +
-        sed -i 's/-Werror\b//g' Makefile
-
         make O=out $DEFCONFIG CC=clang LLVM=1 LLVM_IAS=1
 
-        # 3. APAGAR LTO, CFI Y FUNCIONES CONFLICTIVAS
+        # 2. APAGAR LTO, CFI Y FUNCIONES CONFLICTIVAS DE FORMA SEGURA
         ./scripts/config --file out/.config \
           -d LTO \
           -d LTO_CLANG \
@@ -83,14 +79,13 @@ jobs:
 
         make O=out olddefconfig CC=clang LLVM=1 LLVM_IAS=1
 
-        # Forzar apagado de funciones hostiles por si el kernel las revivio
+        # Forzar apagado por si el script default los reactivo
         sed -i 's/CONFIG_JUMP_LABEL=y/# CONFIG_JUMP_LABEL is not set/g' out/.config
         sed -i 's/CONFIG_WERROR=y/# CONFIG_WERROR is not set/g' out/.config
         sed -i 's/CONFIG_LTO_CLANG=y/# CONFIG_LTO_CLANG is not set/g' out/.config
 
         echo "=== INICIANDO COMPILACION PESADA ==="
-        # Compilar bloqueando todos los errores de advertencia en C
-        make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 KCFLAGS="-Wno-error" KBUILD_CFLAGS="-Wno-error" Image 2>&1 | tee build.log || {
+        make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 KCFLAGS="-Wno-error" Image 2>&1 | tee build.log || {
           echo ""
           echo "=========================================================="
           echo "❌ ERROR FATAL DETECTADO - TOMA CAPTURA DE ESTE BLOQUE ❌"
