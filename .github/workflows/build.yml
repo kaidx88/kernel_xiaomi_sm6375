@@ -60,7 +60,7 @@ jobs:
 
         echo "Usando defconfig: $DEFCONFIG"
         
-        # Inyectar variables directo al archivo base de tu dispositivo
+        # Inyectar variables de root al archivo base
         echo "CONFIG_KPROBES=y" >> arch/arm64/configs/$DEFCONFIG
         echo "CONFIG_HAVE_KPROBES=y" >> arch/arm64/configs/$DEFCONFIG
         echo "CONFIG_KPROBE_EVENTS=y" >> arch/arm64/configs/$DEFCONFIG
@@ -68,23 +68,26 @@ jobs:
         echo "CONFIG_KALLSYMS_ALL=y" >> arch/arm64/configs/$DEFCONFIG
         echo "CONFIG_KSU=y" >> arch/arm64/configs/$DEFCONFIG
         echo "CONFIG_KSU_KPROBE_HOOKS=y" >> arch/arm64/configs/$DEFCONFIG
+        
+        # Apagar funcion Jump Label que rompe el compilador Clang 21
+        echo "# CONFIG_JUMP_LABEL is not set" >> arch/arm64/configs/$DEFCONFIG
 
         make O=out $DEFCONFIG CC=clang LLVM=1 LLVM_IAS=1
 
-        # Apagar reglas estrictas de Clang que detienen la compilacion
+        # Limpiar configuracion estricta y forzar apagado de Jump Label
         ./scripts/config --file out/.config \
           -d MODULE_SIG_FORCE \
           -d DEBUG_INFO \
           -d ERROR_ON_WARNING \
           -d WERROR \
+          -d JUMP_LABEL \
           --set-val FRAME_WARN 0
 
         make O=out olddefconfig CC=clang LLVM=1 LLVM_IAS=1
 
         echo "=== ESTADO DE CONFIGURACION KSU ==="
-        grep -E "CONFIG_KSU|CONFIG_KPROBES" out/.config
+        grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_JUMP_LABEL" out/.config
 
-        # Compilar sin restricciones de Werror
         make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 KBUILD_CFLAGS="-Wno-error" Image
 
         echo "=== VERIFICANDO QUE KSU SE COMPILO DENTRO DEL KERNEL ==="
