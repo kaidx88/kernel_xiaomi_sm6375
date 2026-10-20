@@ -52,10 +52,8 @@ jobs:
           DEFCONFIG="vendor/veux-perf_defconfig"
         elif [ -f arch/arm64/configs/vendor/veux_defconfig ]; then
           DEFCONFIG="vendor/veux_defconfig"
-        elif [ -f arch/arm64/configs/veux_defconfig ]; then
-          DEFCONFIG="veux_defconfig"
         else
-          DEFCONFIG=$(cd arch/arm64/configs && find . -type f \( -name "*veux*" -o -name "*sm6375*" -o -name "*holi*" -o -name "*blair*" \) 2>/dev/null | head -n 1 | sed 's|^\./||')
+          DEFCONFIG=$(cd arch/arm64/configs && find . -type f -name "*veux*" 2>/dev/null | head -n 1 | sed 's|^\./||')
         fi
 
         echo "Usando defconfig: $DEFCONFIG"
@@ -68,27 +66,28 @@ jobs:
         echo "CONFIG_KALLSYMS_ALL=y" >> arch/arm64/configs/$DEFCONFIG
         echo "CONFIG_KSU=y" >> arch/arm64/configs/$DEFCONFIG
         echo "CONFIG_KSU_KPROBE_HOOKS=y" >> arch/arm64/configs/$DEFCONFIG
-        
-        # Apagar funcion Jump Label que rompe el compilador Clang 21
-        echo "# CONFIG_JUMP_LABEL is not set" >> arch/arm64/configs/$DEFCONFIG
 
         make O=out $DEFCONFIG CC=clang LLVM=1 LLVM_IAS=1
 
-        # Limpiar configuracion estricta y forzar apagado de Jump Label
+        # Limpiar configuración estricta 
         ./scripts/config --file out/.config \
           -d MODULE_SIG_FORCE \
           -d DEBUG_INFO \
           -d ERROR_ON_WARNING \
           -d WERROR \
-          -d JUMP_LABEL \
           --set-val FRAME_WARN 0
 
         make O=out olddefconfig CC=clang LLVM=1 LLVM_IAS=1
 
+        # FORZAR apagado de funciones conflictivas DESPUÉS de que el kernel arme la configuración
+        sed -i 's/CONFIG_JUMP_LABEL=y/# CONFIG_JUMP_LABEL is not set/g' out/.config
+        sed -i 's/CONFIG_WERROR=y/# CONFIG_WERROR is not set/g' out/.config
+
         echo "=== ESTADO DE CONFIGURACION KSU ==="
         grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_JUMP_LABEL" out/.config
 
-        make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 KBUILD_CFLAGS="-Wno-error" Image
+        # Compilar bloqueando todos los errores de advertencia en C y ensamblador
+        make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 KCFLAGS="-Wno-error" KBUILD_CFLAGS="-Wno-error" Image
 
         echo "=== VERIFICANDO QUE KSU SE COMPILO DENTRO DEL KERNEL ==="
         if [ ! -f "out/drivers/kernelsu/built-in.a" ] && [ ! -f "out/drivers/kernelsu/ksu.o" ]; then
