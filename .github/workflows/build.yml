@@ -1,4 +1,4 @@
-name: Compilar Positron con KernelSU Next
+name: Compilar Positron con KernelSU Next (5.4 Legacy)
 on:
   workflow_dispatch:
 
@@ -18,14 +18,19 @@ jobs:
         free -h
         df -h
 
-    - name: Descargar código fuente
+    - name: Descargar código fuente del Kernel
       uses: actions/checkout@v4
 
-    - name: Integrar KernelSU Next
+    - name: Integrar KernelSU Next (Rama Legacy para 5.4)
       run: |
-        rm -rf KernelSU drivers/kernelsu
-        git clone https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU || git clone https://github.com/rifsxd/KernelSU-Next.git KernelSU
-        ln -sf ../KernelSU/kernel drivers/kernelsu
+        rm -rf KernelSU KernelSU-Next drivers/kernelsu
+        curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
+        if [ ! -e "drivers/kernelsu/Kconfig" ]; then
+          rm -rf KernelSU KernelSU-Next drivers/kernelsu
+          git clone -b legacy https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU-Next
+          cd KernelSU-Next && git fetch --tags || true && cd ..
+          ln -sf ../KernelSU-Next/kernel drivers/kernelsu
+        fi
         grep -q "kernelsu" drivers/Makefile || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
         grep -q "kernelsu" drivers/Kconfig || sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
         ls -la drivers/kernelsu/
@@ -37,11 +42,12 @@ jobs:
         mkdir -p clang
         curl -LSs "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/LLVM-21.1.8-Linux-X64.tar.xz" | tar -xJ --strip-components=1 -C clang
 
-    - name: Compilar Kernel
+    - name: Compilar Kernel con Verificación de Root
       run: |
         export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
         export ARCH=arm64
         export SUBARCH=arm64
+
         if [ -f arch/arm64/configs/vendor/veux-perf_defconfig ]; then
           DEFCONFIG="vendor/veux-perf_defconfig"
         elif [ -f arch/arm64/configs/vendor/veux_defconfig ]; then
@@ -51,23 +57,44 @@ jobs:
         else
           DEFCONFIG=$(cd arch/arm64/configs && find . -type f \( -name "*veux*" -o -name "*sm6375*" -o -name "*holi*" -o -name "*blair*" \) 2>/dev/null | head -n 1 | sed 's|^\./||')
         fi
+
         echo "Usando defconfig: $DEFCONFIG"
         make O=out $DEFCONFIG CC=clang LLVM=1 LLVM_IAS=1
+
         ./scripts/config --file out/.config \
-          -e KSU \
+          -e MODULES \
           -e KPROBES \
           -e HAVE_KPROBES \
           -e KPROBE_EVENTS \
           -e KRETPROBES \
+          -e KSU \
+          -e KSU_KPROBE_HOOKS \
           -e OVERLAY_FS \
+          -d MODULE_SIG_FORCE \
           -d DEBUG_INFO \
           --set-val FRAME_WARN 0
+
         make O=out olddefconfig CC=clang LLVM=1 LLVM_IAS=1
-        grep "CONFIG_KSU" out/.config || true
+
+        grep -q "CONFIG_KSU=y" out/.config || echo "CONFIG_KSU=y" >> out/.config
+        grep -q "CONFIG_KSU_KPROBE_HOOKS=y" out/.config || echo "CONFIG_KSU_KPROBE_HOOKS=y" >> out/.config
+        grep -q "CONFIG_KPROBES=y" out/.config || echo "CONFIG_KPROBES=y" >> out/.config
+
+        echo "=== ESTADO DE CONFIGURACION KSU ==="
+        grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_MODULES" out/.config
+
         make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 Image
+
+        echo "=== VERIFICANDO QUE KSU SE COMPILO DENTRO DEL KERNEL ==="
+        if [ ! -f "out/drivers/kernelsu/built-in.a" ] && [ ! -f "out/drivers/kernelsu/ksu.o" ]; then
+          echo "ERROR CRITICO: KernelSU-Next no se compilo dentro del kernel."
+          exit 1
+        fi
+        echo "EXITO: Driver de KernelSU-Next compilado e inyectado en Image."
 
     - name: Subir archivo Image
       uses: actions/upload-artifact@v4
       with:
-        name: Image-KSU-Next
+        name: Image-KSU-Next-Legacy
         path: out/arch/arm64/boot/Image
+        
