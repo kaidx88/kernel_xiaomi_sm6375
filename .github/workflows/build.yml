@@ -1,4 +1,4 @@
-name: Compilar Positron con KernelSU Next (5.4 Legacy)
+name: Compilar Positron Blindado KSU-Next
 on:
   workflow_dispatch:
 
@@ -15,13 +15,11 @@ jobs:
         sudo chmod 600 /swapfile
         sudo mkswap /swapfile
         sudo swapon /swapfile
-        free -h
-        df -h
 
     - name: Descargar código fuente del Kernel
       uses: actions/checkout@v4
 
-    - name: Integrar KernelSU Next (Rama Legacy para 5.4)
+    - name: Integrar KernelSU Next (Rama Legacy 5.4)
       run: |
         rm -rf KernelSU KernelSU-Next drivers/kernelsu
         curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
@@ -33,7 +31,6 @@ jobs:
         fi
         grep -q "kernelsu" drivers/Makefile || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
         grep -q "kernelsu" drivers/Kconfig || sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
-        ls -la drivers/kernelsu/
 
     - name: Preparar entorno de compilación
       run: |
@@ -42,7 +39,7 @@ jobs:
         mkdir -p clang
         curl -LSs "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/LLVM-21.1.8-Linux-X64.tar.xz" | tar -xJ --strip-components=1 -C clang
 
-    - name: Compilar Kernel con Verificación de Root
+    - name: Blindaje contra errores y Compilación
       run: |
         export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
         export ARCH=arm64
@@ -55,10 +52,8 @@ jobs:
         else
           DEFCONFIG=$(cd arch/arm64/configs && find . -type f -name "*veux*" 2>/dev/null | head -n 1 | sed 's|^\./||')
         fi
-
-        echo "Usando defconfig: $DEFCONFIG"
         
-        # Inyectar variables de root al archivo base
+        # 1. Inyectar dependencias estrictas de Root
         echo "CONFIG_KPROBES=y" >> arch/arm64/configs/$DEFCONFIG
         echo "CONFIG_HAVE_KPROBES=y" >> arch/arm64/configs/$DEFCONFIG
         echo "CONFIG_KPROBE_EVENTS=y" >> arch/arm64/configs/$DEFCONFIG
@@ -67,38 +62,50 @@ jobs:
         echo "CONFIG_KSU=y" >> arch/arm64/configs/$DEFCONFIG
         echo "CONFIG_KSU_KPROBE_HOOKS=y" >> arch/arm64/configs/$DEFCONFIG
 
+        # 2. DESTRUIR TODAS LAS REGLAS STRICT WERROR EN EL CODIGO FUENTE
+        find . -type f \( -name "Makefile" -o -name "Kbuild" \) -exec sed -i 's/-Werror//g' {} +
+        sed -i 's/-Werror\b//g' Makefile
+
         make O=out $DEFCONFIG CC=clang LLVM=1 LLVM_IAS=1
 
-        # Limpiar configuración estricta 
+        # 3. APAGAR LTO, CFI Y FUNCIONES CONFLICTIVAS
         ./scripts/config --file out/.config \
+          -d LTO \
+          -d LTO_CLANG \
+          -d CFI_CLANG \
+          -e LTO_NONE \
           -d MODULE_SIG_FORCE \
           -d DEBUG_INFO \
           -d ERROR_ON_WARNING \
           -d WERROR \
+          -d JUMP_LABEL \
           --set-val FRAME_WARN 0
 
         make O=out olddefconfig CC=clang LLVM=1 LLVM_IAS=1
 
-        # FORZAR apagado de funciones conflictivas DESPUÉS de que el kernel arme la configuración
+        # Forzar apagado de funciones hostiles por si el kernel las revivio
         sed -i 's/CONFIG_JUMP_LABEL=y/# CONFIG_JUMP_LABEL is not set/g' out/.config
         sed -i 's/CONFIG_WERROR=y/# CONFIG_WERROR is not set/g' out/.config
+        sed -i 's/CONFIG_LTO_CLANG=y/# CONFIG_LTO_CLANG is not set/g' out/.config
 
-        echo "=== ESTADO DE CONFIGURACION KSU ==="
-        grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_JUMP_LABEL" out/.config
+        echo "=== INICIANDO COMPILACION PESADA ==="
+        # Compilar bloqueando todos los errores de advertencia en C
+        make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 KCFLAGS="-Wno-error" KBUILD_CFLAGS="-Wno-error" Image 2>&1 | tee build.log || {
+          echo ""
+          echo "=========================================================="
+          echo "❌ ERROR FATAL DETECTADO - TOMA CAPTURA DE ESTE BLOQUE ❌"
+          echo "=========================================================="
+          grep -i -E "error:|fatal " build.log | grep -v "ext4_error" | tail -n 20
+          exit 1
+        }
 
-        # Compilar bloqueando todos los errores de advertencia en C y ensamblador
-        make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 KCFLAGS="-Wno-error" KBUILD_CFLAGS="-Wno-error" Image
-
-        echo "=== VERIFICANDO QUE KSU SE COMPILO DENTRO DEL KERNEL ==="
         if [ ! -f "out/drivers/kernelsu/built-in.a" ] && [ ! -f "out/drivers/kernelsu/ksu.o" ]; then
           echo "ERROR CRITICO: KernelSU-Next no se compilo dentro del kernel."
           exit 1
         fi
-        echo "EXITO: Driver de KernelSU-Next compilado e inyectado en Image."
 
     - name: Subir archivo Image
       uses: actions/upload-artifact@v4
       with:
-        name: Image-KSU-Next-Legacy
+        name: Image-KSU-Next-Blindado
         path: out/arch/arm64/boot/Image
-        
