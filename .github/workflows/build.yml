@@ -95,7 +95,7 @@ jobs:
           echo "=========================================================="
           echo "❌ ERROR FATAL DETECTADO - TOMA CAPTURA DE ESTE BLOQUE ❌"
           echo "=========================================================="
-          grep -i -E "error:|fatal " build.log | grep -v "ext4_error" | tail -n 20
+          grep -i -E "error:|fatal " build.log | grep -v -i "ext4_error" | grep -v -i "warning" | tail -n 20
           exit 1
         }
 
