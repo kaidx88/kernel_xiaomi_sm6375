@@ -1,4 +1,4 @@
-name: Compilar Positron KSU-Next (Definitivo)
+name: Compilar Positron KSU-Next (Limpio)
 on:
   workflow_dispatch:
 
@@ -33,41 +33,59 @@ jobs:
         mkdir -p clang
         curl -LSs "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/LLVM-21.1.8-Linux-X64.tar.xz" | tar -xJ --strip-components=1 -C clang
 
-    - name: Compilar Kernel
+    - name: Configurar y Compilar
       run: |
-        # TRUCO MAESTRO: Obliga al sistema a mostrar el error sin ocultarlo
-        set -o pipefail 
-
         export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
         export ARCH=arm64
         export SUBARCH=arm64
 
         DEFCONFIG=$(cd arch/arm64/configs && find . -type f -name "*veux*" 2>/dev/null | head -n 1 | sed 's|^\./||')
 
-        # DESTRUIR WERROR EN TODO EL KERNEL PARA EVITAR FALSOS POSITIVOS
-        find . -type f \( -name "Makefile" -o -name "Kbuild" \) -exec sed -i 's/-Werror\b//g' {} +
-
-        # INYECTAR KPROBES Y ROOT
-        echo "CONFIG_KPROBES=y" >> arch/arm64/configs/$DEFCONFIG
-        echo "CONFIG_HAVE_KPROBES=y" >> arch/arm64/configs/$DEFCONFIG
-        echo "CONFIG_KPROBE_EVENTS=y" >> arch/arm64/configs/$DEFCONFIG
-        echo "CONFIG_KSU=y" >> arch/arm64/configs/$DEFCONFIG
-        echo "CONFIG_KSU_KPROBE_HOOKS=y" >> arch/arm64/configs/$DEFCONFIG
-
+        # 1. Crear configuración base
         make O=out $DEFCONFIG CC=clang LLVM=1 LLVM_IAS=1
 
-        # APAGAR LTO Y REGLAS ESTRICTAS
-        ./scripts/config --file out/.config -d LTO -d LTO_CLANG -d CFI_CLANG -e LTO_NONE -d WERROR -d ERROR_ON_WARNING -d MODULE_SIG_FORCE -d JUMP_LABEL
+        # 2. Apagar de forma NATIVA (sin hacks) las reglas que detienen el kernel
+        ./scripts/config --file out/.config \
+          -d LTO \
+          -d LTO_CLANG \
+          -d CFI_CLANG \
+          -d WERROR \
+          -d ERROR_ON_WARNING \
+          -d MODULE_SIG_FORCE \
+          -d JUMP_LABEL \
+          -e LTO_NONE \
+          --set-val FRAME_WARN 0
+
+        # 3. Inyectar de forma NATIVA el Root y Kprobes
+        ./scripts/config --file out/.config \
+          -e KPROBES \
+          -e HAVE_KPROBES \
+          -e KPROBE_EVENTS \
+          -e KALLSYMS \
+          -e KALLSYMS_ALL \
+          -e KSU \
+          -e KSU_KPROBE_HOOKS
+
+        # 4. Consolidar configuración limpia
         make O=out olddefconfig CC=clang LLVM=1 LLVM_IAS=1
 
-        echo "=== COMPILACION PESADA ==="
+        echo "=== VERIFICANDO CONFIGURACION FINAL ==="
+        grep -E "CONFIG_KSU|CONFIG_LTO|CONFIG_WERROR|CONFIG_KPROBES" out/.config
+
+        echo "=== INICIANDO COMPILACION PESADA ==="
+        set -o pipefail
         make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 KCFLAGS="-Wno-error" KBUILD_CFLAGS="-Wno-error" Image 2>&1 | tee build.log || {
           echo "=========================================================="
-          echo "❌ ERROR FATAL DETECTADO - TOMA CAPTURA DE ESTE BLOQUE ❌"
+          echo "❌ ERROR FATAL DETECTADO ❌"
           echo "=========================================================="
           grep -i -E "error:|fatal " build.log | grep -v -i "ext4_error" | tail -n 25
           exit 1
         }
+
+        if [ ! -f "out/drivers/kernelsu/built-in.a" ] && [ ! -f "out/drivers/kernelsu/ksu.o" ]; then
+          echo "ERROR CRITICO: KernelSU-Next no se compilo."
+          exit 1
+        fi
 
     - name: Subir Image
       uses: actions/upload-artifact@v4
