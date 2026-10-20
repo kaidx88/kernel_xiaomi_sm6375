@@ -1,4 +1,4 @@
-name: Compilar Positron KSU-Next (Fix Flags)
+name: Compilar Positron KSU-Next (Manual Hooks 5.4)
 on:
   workflow_dispatch:
 
@@ -19,7 +19,7 @@ jobs:
     - name: Descargar código fuente del Kernel
       uses: actions/checkout@v4
 
-    - name: Integrar KernelSU Next (Rama Legacy 5.4)
+    - name: Integrar KernelSU Next (Rama Legacy) y Parchear Manual Hooks
       run: |
         rm -rf KernelSU KernelSU-Next drivers/kernelsu
         curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
@@ -32,6 +32,38 @@ jobs:
         grep -q "kernelsu" drivers/Makefile || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
         grep -q "kernelsu" drivers/Kconfig || sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
 
+        echo "=== INYECTANDO MANUAL HOOKS OFICIALES EN FS/ ==="
+        # 1. Hook en fs/exec.c
+        if ! grep -q "ksu_handle_execveat" fs/exec.c; then
+          sed -i '/^static int do_execveat_common/i #ifdef CONFIG_KSU\nextern bool ksu_execveat_hook __read_mostly;\nextern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\nextern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n#endif' fs/exec.c
+          sed -i '/^static int do_execveat_common/,/^}/ { /if (IS_ERR(filename))/i #ifdef CONFIG_KSU\n\tif (unlikely(ksu_execveat_hook))\n\t\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n\telse\n\t\tksu_handle_execveat_sucompat(&fd, &filename, NULL, NULL, NULL);\n#endif
+          }' fs/exec.c
+        fi
+
+        # 2. Hook en fs/open.c (faccessat)
+        if ! grep -q "ksu_handle_faccessat" fs/open.c; then
+          sed -i '/^long do_faccessat/i #ifdef CONFIG_KSU\nextern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\n#endif' fs/open.c
+          sed -i '/^long do_faccessat/,/^}/ { /if (mode & ~S_IRWXO)/i #ifdef CONFIG_KSU\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif
+          }' fs/open.c
+        fi
+
+        # 3. Hook en fs/read_write.c (vfs_read)
+        if ! grep -q "ksu_handle_vfs_read" fs/read_write.c; then
+          sed -i '/^ssize_t vfs_read/i #ifdef CONFIG_KSU\nextern bool ksu_vfs_read_hook __read_mostly;\nextern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);\n#endif' fs/read_write.c
+          sed -i '/^ssize_t vfs_read/,/^}/ { /if (!(file->f_mode & FMODE_READ))/i #ifdef CONFIG_KSU\n\tif (unlikely(ksu_vfs_read_hook))\n\t\tksu_handle_vfs_read(&file, &buf, &count, &pos);\n#endif
+          }' fs/read_write.c
+        fi
+
+        # 4. Hook en fs/stat.c (vfs_statx)
+        if ! grep -q "ksu_handle_stat" fs/stat.c; then
+          sed -i '/^int vfs_statx(/i #ifdef CONFIG_KSU\nextern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n#endif' fs/stat.c
+          sed -i '/^int vfs_statx(/,/^}/ { /if ((flag & ~(AT_SYMLINK_NOFOLLOW/i #ifdef CONFIG_KSU\n\tksu_handle_stat(&dfd, &filename, &flag);\n#endif
+          }' fs/stat.c
+        fi
+
+        echo "Verificando hooks inyectados:"
+        grep -n "ksu_handle_" fs/exec.c fs/open.c fs/read_write.c fs/stat.c
+
     - name: Preparar entorno de compilación
       run: |
         sudo apt-get update
@@ -39,7 +71,7 @@ jobs:
         mkdir -p clang
         curl -LSs "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/LLVM-21.1.8-Linux-X64.tar.xz" | tar -xJ --strip-components=1 -C clang
 
-    - name: Blindaje contra errores y Compilación
+    - name: Compilar Kernel (Modo Manual Hook Limpio)
       run: |
         export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
         export ARCH=arm64
@@ -52,65 +84,28 @@ jobs:
         else
           DEFCONFIG=$(cd arch/arm64/configs && find . -type f -name "*veux*" 2>/dev/null | head -n 1 | sed 's|^\./||')
         fi
-        
-        # 1. DESTRUIR TODAS LAS REGLAS STRICT WERROR EN EL CODIGO FUENTE
-        find . -type f \( -name "Makefile" -o -name "Kbuild" \) -exec sed -i 's/-Werror//g' {} +
-        sed -i 's/-Werror\b//g' Makefile
 
-        # 2. Configurar el kernel base
+        echo "CONFIG_KSU=y" >> arch/arm64/configs/$DEFCONFIG
+        echo "CONFIG_KSU_MANUAL_HOOK=y" >> arch/arm64/configs/$DEFCONFIG
+        echo "# CONFIG_KPROBES is not set" >> arch/arm64/configs/$DEFCONFIG
+
         make O=out $DEFCONFIG CC=clang LLVM=1 LLVM_IAS=1
-
-        # 3. APAGAR LTO, CFI Y FUNCIONES CONFLICTIVAS DE FORMA SEGURA
-        ./scripts/config --file out/.config \
-          -d LTO \
-          -d LTO_CLANG \
-          -d CFI_CLANG \
-          -e LTO_NONE \
-          -d MODULE_SIG_FORCE \
-          -d DEBUG_INFO \
-          -d ERROR_ON_WARNING \
-          -d WERROR \
-          -d JUMP_LABEL \
-          --set-val FRAME_WARN 0
-
-        # Limpiar configuración sin borrar configuraciones ajenas
         make O=out olddefconfig CC=clang LLVM=1 LLVM_IAS=1
 
-        # 4. INYECTAR DEPENDENCIAS DE ROOT *DESPUES* DE LA LIMPIEZA PARA QUE NO SE BORREN
-        echo "CONFIG_KPROBES=y" >> out/.config
-        echo "CONFIG_HAVE_KPROBES=y" >> out/.config
-        echo "CONFIG_KPROBE_EVENTS=y" >> out/.config
-        echo "CONFIG_KALLSYMS=y" >> out/.config
-        echo "CONFIG_KALLSYMS_ALL=y" >> out/.config
-        echo "CONFIG_KSU=y" >> out/.config
-        echo "CONFIG_KSU_KPROBE_HOOKS=y" >> out/.config
+        echo "=== ESTADO DE CONFIGURACION KSU ==="
+        grep "CONFIG_KSU" out/.config
 
-        # Forzar apagado por si el script default los reactivo
-        sed -i 's/CONFIG_JUMP_LABEL=y/# CONFIG_JUMP_LABEL is not set/g' out/.config
-        sed -i 's/CONFIG_WERROR=y/# CONFIG_WERROR is not set/g' out/.config
-        sed -i 's/CONFIG_LTO_CLANG=y/# CONFIG_LTO_CLANG is not set/g' out/.config
-
-        echo "=== ESTADO DE INTEGRACION DEL ROOT ==="
-        grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_LTO" out/.config
-
-        echo "=== INICIANDO COMPILACION PESADA ==="
-        # Compilar bloqueando todos los errores de advertencia en C
-        make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 KCFLAGS="-Wno-error" KBUILD_CFLAGS="-Wno-error" Image 2>&1 | tee build.log || {
-          echo ""
-          echo "=========================================================="
-          echo "❌ ERROR FATAL DETECTADO - TOMA CAPTURA DE ESTE BLOQUE ❌"
-          echo "=========================================================="
-          grep -i -E "error:|fatal " build.log | grep -v -i "ext4_error" | grep -v -i "warning" | tail -n 20
+        make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 Image 2>&1 | tee build.log || {
+          echo "=== ERROR DETECTADO ==="
+          grep -i -E "error:|fatal " build.log | grep -v -i "ext4_error" | grep -v -i "warning" | tail -n 25
           exit 1
         }
 
-        if [ ! -f "out/drivers/kernelsu/built-in.a" ] && [ ! -f "out/drivers/kernelsu/ksu.o" ]; then
-          echo "ERROR CRITICO: KernelSU-Next no se compilo dentro del kernel."
-          exit 1
-        fi
+        echo "=== VERIFICANDO OBJETOS DE KSU COMPILADOS ==="
+        ls -la out/drivers/kernelsu/
 
     - name: Subir archivo Image
       uses: actions/upload-artifact@v4
       with:
-        name: Image-KSU-Next-Blindado
+        name: Image-KSU-Next-ManualHook
         path: out/arch/arm64/boot/Image
